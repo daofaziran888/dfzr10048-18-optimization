@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Generic, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 T = TypeVar("T")
 
@@ -27,5 +27,8 @@ class EntryPayload(BaseModel):
 
 
 class ActionPayload(BaseModel):
+    # 交付回执等富动作需要携带 credential/content/lines 等附加字段。
+    model_config = ConfigDict(extra="allow")
+
     action: str
     remark: str | None = None

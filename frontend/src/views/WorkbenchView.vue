@@ -15,6 +15,59 @@
       </div>
     </header>
 
+    <section v-if="meta.key === 'delivery_receipt'" class="receipt-panel" data-testid="receipt-consistency-panel">
+      <h3>断点导出 · 归属鉴权 · 签收复验</h3>
+      <div class="filter-bar">
+        <label class="filter-item">
+          <span>接收方标识</span>
+          <input v-model="receiptReceiver" data-testid="receipt-receiver-input" placeholder="回执归属接收方" />
+        </label>
+        <label class="filter-item">
+          <span>接收方凭据</span>
+          <input v-model="receiptCredential" data-testid="receipt-credential-input" placeholder="仅凭据归属接收方可访问" />
+        </label>
+        <label class="filter-item">
+          <span>回执编号</span>
+          <input v-model="receiptId" data-testid="receipt-id-input" placeholder="例如 DLRC-0001" />
+        </label>
+        <label class="filter-item">
+          <span>批次编号</span>
+          <input v-model="receiptBatch" data-testid="receipt-batch-input" placeholder="同一批导出凭证" />
+        </label>
+        <label class="filter-item">
+          <span>补签区间</span>
+          <input v-model="supplementRange" data-testid="supplement-range-input" placeholder="61-80" />
+        </label>
+      </div>
+      <div class="page-actions receipt-actions">
+        <button class="btn" data-testid="issue-credential" type="button" @click="issueReceiptCredential">签发/登记凭据</button>
+        <button class="btn" data-testid="create-receipt-batch" type="button" @click="createReceiptBatch">建立同批凭证</button>
+        <button class="btn primary" data-testid="resume-receipt-export" type="button" @click="resumeReceiptExport">断点续下未收回执</button>
+        <button class="btn" data-testid="claim-supplement" type="button" @click="claimSupplement">单独领取补签</button>
+        <button class="btn" data-testid="review-receipt" type="button" @click="reviewReceipt">原凭据复查记录</button>
+      </div>
+
+      <div class="verify-grid">
+        <label class="filter-item">
+          <span>C 版本一实际字幕（每行一条）</span>
+          <textarea v-model="subtitleVersionA" data-testid="subtitle-version-a" rows="5" placeholder="粘贴第一版实际字幕"></textarea>
+        </label>
+        <label class="filter-item">
+          <span>C 版本二实际字幕（每行一条）</span>
+          <textarea v-model="subtitleVersionB" data-testid="subtitle-version-b" rows="5" placeholder="粘贴改字版实际字幕"></textarea>
+        </label>
+      </div>
+      <div class="page-actions receipt-actions">
+        <button class="btn" data-testid="freeze-pack-content" type="button" @click="freezePackContent">用版本一冻结当时字节</button>
+        <button class="btn primary" data-testid="verify-two-versions" type="button" @click="verifyTwoVersions">两版 C 分别验签</button>
+        <button class="btn" data-testid="verify-current-receipt" type="button" @click="verifyCurrentReceipt">只验当前文本</button>
+      </div>
+
+      <p v-if="receiptFeedback" class="receipt-feedback" data-testid="receipt-feedback">{{ receiptFeedback }}</p>
+      <p v-if="receiptError" class="error-text" data-testid="receipt-error">{{ receiptError }}</p>
+      <pre v-if="receiptResult" class="receipt-result" data-testid="receipt-result">{{ JSON.stringify(receiptResult, null, 2) }}</pre>
+    </section>
+
     <div class="stat-row">
       <article v-for="item in stats" :key="item.label" class="stat-card">
         <span class="stat-label">{{ item.label }}</span>
@@ -104,6 +157,7 @@ import {
   runAction as applyAction,
 } from '@/api/backend-service'
 import type { EntryRow } from '@/data/types'
+import { request } from '@/api/client'
 
 const props = defineProps<{ moduleKey: string }>()
 const meta = moduleMeta(props.moduleKey)
@@ -115,6 +169,16 @@ const filterFields = meta.fields.slice(0, 3)
 const showCreate = ref(false)
 const creating = ref(false)
 const createValues = ref<Record<string, string>>({})
+const receiptCredential = ref('')
+const receiptReceiver = ref('')
+const receiptId = ref('')
+const receiptBatch = ref('')
+const supplementRange = ref('61-80')
+const subtitleVersionA = ref('')
+const subtitleVersionB = ref('')
+const receiptResult = ref<Record<string, unknown> | null>(null)
+const receiptFeedback = ref('')
+const receiptError = ref('')
 const stats = computed(() => [
   { label: meta.metrics[0], value: total.value },
   { label: meta.metrics[1], value: rows.value.filter((row) => row.status === meta.statuses[1]).length },
@@ -138,7 +202,15 @@ function resetFilters() {
 async function exportRows() {
   errorMessage.value = ''
   try {
-    await downloadEntries(meta.key, filters.value)
+    const exportFilters: Record<string, string> = { ...filters.value }
+    if (meta.key === 'delivery_receipt') {
+      if (receiptCredential.value) exportFilters.credential = receiptCredential.value
+      if (receiptReceiver.value) exportFilters.receiver_id = receiptReceiver.value
+      if (receiptBatch.value) exportFilters.batch_id = receiptBatch.value
+      if (supplementRange.value) exportFilters.range = supplementRange.value
+      if (receiptCredential.value || receiptBatch.value) exportFilters.resume = '1'
+    }
+    await downloadEntries(meta.key, exportFilters)
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '导出失败'
   }
@@ -176,6 +248,131 @@ async function runAction(action: string, row: EntryRow) {
   }
 }
 
+async function receiptPost(path: string, body: Record<string, unknown>): Promise<any> {
+  const response = await request(`/api/delivery_receipt${path}`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(typeof data.detail === 'string' ? data.detail : '回执一致性接口拒绝了本次请求')
+  }
+  return data
+}
+
+async function receiptGet(path: string): Promise<any> {
+  const response = await request(`/api/delivery_receipt${path}`)
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(typeof data.detail === 'string' ? data.detail : '回执一致性接口拒绝了本次请求')
+  }
+  return data
+}
+
+function presentReceiptResult(result: Record<string, unknown>, feedback?: string) {
+  receiptResult.value = result
+  if (typeof result.batch_id === 'string' && result.batch_id) {
+    receiptBatch.value = result.batch_id
+  }
+  if (typeof result.receipt_id === 'string' && result.receipt_id && !receiptId.value) {
+    receiptId.value = result.receipt_id
+  }
+  receiptFeedback.value = feedback || String(result.message || '操作完成')
+}
+
+async function runReceiptCall(label: string, fn: () => Promise<Record<string, unknown>>) {
+  receiptError.value = ''
+  receiptFeedback.value = ''
+  try {
+    const result = await fn()
+    presentReceiptResult(result, `${label}：${String(result.message || '完成')}`)
+  } catch (error) {
+    receiptResult.value = null
+    receiptError.value = error instanceof Error ? error.message : `${label}失败`
+  }
+}
+
+function issueReceiptCredential() {
+  return runReceiptCall('签发凭据', () => receiptPost('/credentials', {
+    receipt_id: receiptId.value,
+    receiver_id: receiptReceiver.value,
+    token: receiptCredential.value || undefined,
+    credential: receiptCredential.value || undefined,
+  }))
+}
+
+function createReceiptBatch() {
+  return runReceiptCall('建立批次', () => receiptPost('/batches', {
+    credential: receiptCredential.value,
+    receiver_id: receiptReceiver.value || undefined,
+    batch_id: receiptBatch.value || undefined,
+    receipt_ids: receiptId.value ? [receiptId.value] : undefined,
+  }))
+}
+
+function resumeReceiptExport() {
+  const params = new URLSearchParams()
+  if (receiptCredential.value) params.set('credential', receiptCredential.value)
+  if (receiptBatch.value) params.set('batch_id', receiptBatch.value)
+  if (supplementRange.value) params.set('range', supplementRange.value)
+  return runReceiptCall('断点续下', () => receiptPost('/exports', {
+    credential: receiptCredential.value,
+    batch_id: receiptBatch.value || undefined,
+    receiver_id: receiptReceiver.value || undefined,
+    range: supplementRange.value || undefined,
+  }).then((data) => {
+    // 同时保留 GET 导出入口可核对的查询参数形态，便于页面刷新后复现。
+    window.history.replaceState(null, '', `?${params.toString()}`)
+    return data
+  }))
+}
+
+function claimSupplement() {
+  return runReceiptCall('领取补签', () => receiptPost('/supplements/claim', {
+    credential: receiptCredential.value,
+    batch_id: receiptBatch.value || undefined,
+    receipt_id: receiptId.value || undefined,
+    range: supplementRange.value || undefined,
+  }))
+}
+
+function reviewReceipt() {
+  const params = new URLSearchParams()
+  params.set('credential', receiptCredential.value)
+  if (receiptReceiver.value) params.set('receiver_id', receiptReceiver.value)
+  return runReceiptCall('复查记录', () => receiptGet(`/review?receipt_id=${encodeURIComponent(receiptId.value)}&${params.toString()}`))
+}
+
+function subtitleLines(text: string): string[] {
+  return text.replace(/\s+$/g, '').split('\n')
+}
+
+function freezePackContent() {
+  return runReceiptCall('冻结旧包字节', () => receiptPost('/content', {
+    receipt_id: receiptId.value || undefined,
+    credential: receiptCredential.value || undefined,
+    lines: subtitleLines(subtitleVersionA.value),
+    version: 'C-frozen',
+  }))
+}
+
+function verifyTwoVersions() {
+  return runReceiptCall('两版验签', () => receiptPost('/verify-signatures', {
+    credential: receiptCredential.value,
+    receipt_id: receiptId.value || undefined,
+    contents: [subtitleLines(subtitleVersionA.value), subtitleLines(subtitleVersionB.value)],
+    versions: ['C-version-A', 'C-version-B'],
+  }))
+}
+
+function verifyCurrentReceipt() {
+  return runReceiptCall('当前文本验签', () => receiptPost('/verify', {
+    credential: receiptCredential.value,
+    receipt_id: receiptId.value || undefined,
+    lines: subtitleLines(subtitleVersionA.value || subtitleVersionB.value),
+  }))
+}
+
 async function reload() {
   errorMessage.value = ''
   try {
@@ -189,3 +386,54 @@ async function reload() {
 
 onMounted(reload)
 </script>
+
+<style scoped>
+.receipt-panel {
+  margin: 16px 0;
+  padding: 16px;
+  border: 1px solid var(--border-color, #d9dee8);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.receipt-panel h3 {
+  margin: 0 0 12px;
+}
+
+.receipt-actions {
+  flex-wrap: wrap;
+  margin: 12px 0;
+}
+
+.verify-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.verify-grid textarea {
+  width: 100%;
+  border: 1px solid #cfd6e4;
+  border-radius: 8px;
+  padding: 8px;
+  font: inherit;
+  resize: vertical;
+}
+
+.receipt-result {
+  max-height: 320px;
+  overflow: auto;
+  padding: 12px;
+  border-radius: 8px;
+  background: #101828;
+  color: #d0d5dd;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.receipt-feedback {
+  color: #067647;
+  font-weight: 600;
+}
+</style>

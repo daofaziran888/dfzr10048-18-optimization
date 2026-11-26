@@ -43,7 +43,16 @@ export async function downloadEntries(
 ): Promise<void> {
   const query = new URLSearchParams(filters).toString()
   const response = await request(`/api/${key}/export?${query}`)
-  if (!response.ok) throw new Error('业务数据导出失败')
+  if (!response.ok) {
+    let detail = '业务数据导出失败'
+    try {
+      const errorBody = await response.json()
+      if (typeof errorBody?.detail === 'string') detail = errorBody.detail
+    } catch {
+      // 非 JSON 错误响应时保留通用提示。
+    }
+    throw new Error(detail)
+  }
   const url = URL.createObjectURL(await response.blob())
   const anchor = document.createElement('a')
   anchor.href = url
